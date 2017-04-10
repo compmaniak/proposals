@@ -1,0 +1,265 @@
+<html><head>
+<meta http-equiv="Content-Language" content="en-us">
+<meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+<title>Heterogeneous lookup in unordered containers</title>
+</head>
+
+<body>
+
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse" bordercolor="#111111" width="607">
+<tr>
+  <td width="172" align="left" valign="top">Document number:</td>
+  <td width="435">D</td>
+</tr>
+<tr>
+  <td width="172" align="left" valign="top">Date:</td>
+  <td width="435">2017-04-08</td>
+</tr>
+<tr>
+  <td width="172" align="left" valign="top">Project:</td>
+  <td width="435">Programming Language C++, Library Working Group</td>
+</tr>
+<tr>
+  <td width="172" align="left" valign="top">Reply-to:</td>
+  <td width="435">Roman Orlov &lt;mr.gordon.freman at gmail dot com&gt;</td>
+</tr>
+</table>
+
+
+<h1>Heterogeneous lookup in unordered containers</h1>
+
+<h2><a name="introduction">Introduction</a></h2>
+<p>This proposal is aimed to add heterogeneous lookup functions to the unordered
+   associative containers in Standard Library. These functions allow finding elements without
+   actual construction of a temporary key object.</p>
+
+<h2><a name="motivation">Motivation and Scope</a></h2>
+<p>Heterogeneous lookup functions are not new. C++14 introduced these functions
+   in the ordered associative containers (<code>std::map</code>, <code>std::set</code>, etc).</p>
+<p>C++17 has presented <code>std::string_view</code> class and now it is 
+   possible to search for elements in <code>std::string</code>-based associative container
+   via <code>std::string_view</code> without construction of <code>std::string</code> instance.
+   Consider the example:</p>
+<blockquote>
+<pre>
+std::set&lt;std::string&gt; s1 = {"hello"};
+s1.find(std::string_view{"hello"}); // it won't compile
+...
+// explicitly provide transparent compare function
+std::set&lt;std::string, std::less&lt;&gt;&gt; s2 = {"hello"}; 
+s2.find(std::string_view{"hello"}); // now it's ok
+</pre>
+</blockquote>
+<p>But that's not working in unordered containers because of two reasons: there are no
+   transparent hash function and heterogeneous lookup members overloads.
+   Thus this proposal allows a programmer to enable heterogeneous lookup members by
+   defining unordered container with both transparent hash and comparison function.
+   For example:</p>
+<blockquote>
+<pre>
+std::unordered_set&lt;std::string, std::hash&lt;&gt;, std::equal_to&lt;&gt;&gt; s3 = {"hello"};
+s3.find(std::string_view{"hello"});
+</pre>
+</blockquote>
+<p>Using an unordered container with <code>std:string</code> key is a widely used approach.
+   So heterogeneous lookup would be very helpful for many users. The proposal is not about
+   <code>std::string</code> and <code>std::string_view</code> only but is about
+   any complex user defined type.</p>
+
+<h2><a name="impact">Impact On the Standard</a></h2>
+<p>This proposal can be implemented in terms of existing C++11 standard library components.</p>
+<p>This proposal has no dependencies beyond a C++11 compiler and Standard Library implementation. Nothing depends on it.</p>
+<p>It requires changes to the following standard components:
+    <ul>
+        <li><code>unordered_set</code></li>
+        <li><code>unordered_multiset</code></li>
+        <li><code>unordered_map</code></li>
+        <li><code>unordered_multimap</code></li>
+        <li>introduce <code>hash&lt;void&gt;</code> specialization</li>
+    </ul>
+</p>
+
+<h2><a name="design">Design Decisions</a></h2>
+<p>All decisions are made in contrast to the existing Mark Boyall's proposal N3573 [1].</p>
+
+<h3>Heterogeneous hash function object</h3>
+<p>Proposal N3573 defines the heterogeneous hash function object in the following way:
+<blockquote>
+<pre>
+template&lt;typename T = void> struct hash;
+template<> struct hash&lt;void> {
+    template&lt;typename T> std::size_t operator()(T&& t) {
+        return std::hash&lt;typename std::decay&lt;T>::type>()(std::forward&lt;T>(t));
+    }
+};
+</pre>
+</blockquote></p>
+<p>That's a dangerous approach because <code>std::decay</code> destroys initial type
+   (remember array-to-pointer conversion). Also it doesn't have <code>is_transaprent</code> tag.
+   This document proposes much more safer way:
+<blockquote>
+<pre>
+template&lt;class T = void> struct hash;
+template <> struct hash&lt;void> {
+    template &lt;class T>
+    size_t operator()(T&& t) const noexcept {
+        return hash&lt;typename remove_cv&lt;typename remove_reference&lt;T>::type>::type>{}(t);
+    }
+    using is_transparent = void;
+};
+</pre>
+</blockquote></p>
+
+<h3>Heterogeneous member functions overloads</h3>
+<p>Proposal N3573 defines heterogeneous lookup functions in the following way:
+<blockquote>
+<pre>
+template&lt;typename T, typename Hash = std::hash&lt;>, typename Eq = std::equal_to&lt;>>
+iterator find(T t, Hash h = Hash(), Eq e = Eq());
+template&lt;typename T, typename Hash = std::hash&lt;>, typename Eq = std::equal_to&lt;>>
+const_iterator find(T t, Hash h = Hash(), Eq e = Eq()) const;
+</pre>
+</blockquote></p>
+<p>Here transparency is enabled by default that may break an old code like that:
+<blockquote>
+<pre>
+std::unordered_set&lt;std::string> s = {"aaa"};
+s.find({'a', 'a', 'a'}); // it won't compile
+</pre>
+</blockquote></p>
+<p>This document proposes SFINAE approach similar to the ordered associative containers
+   (see "Implementability" section for details).</p>
+<blockquote>
+<pre>
+template &lt;class K> iterator find(const K& k);
+template &lt;class K> const_iterator find(const K& k) const;
+</pre>
+</blockquote>
+    
+<h2><a name="wording">Proposed wording</a></h2>
+<p>Make the following changes to the specified working paper:</p>
+<blockquote>
+
+<h3>23.14.1 Header &lt;functional&gt; synopsis [functional.syn]</h3>
+<blockquote>
+<pre>
+template &lt;class T<ins> = void</ins>&gt;
+  struct hash;
+<ins>template &lt;&gt; struct hash&lt;void&gt;;</ins>
+</pre>
+</blockquote>
+
+<h3>23.14.15 Class template hash [unord.hash]</h3>
+<blockquote>
+<pre>
+<ins>template &lt;&gt; struct hash&lt;void&gt; {
+  template &lt;class T&gt;
+  size_t operator()(T&& t) const noexcept {
+    return hash&lt;typename remove_cv&lt;typename remove_reference&lt;T&gt;::type&gt;::type&gt;{}(t);
+  }
+  using is_transparent = unspecified;
+};
+</ins></pre>
+</blockquote>
+
+<h3>26.5.4.1 Class template unordered_­map overview [unord.map.overview]</h3>
+<blockquote>
+<pre>// map operations:
+iterator       find(const key_type& k);
+const_iterator find(const key_type& k) const;
+<ins>template &lt;class K&gt; iterator find(const K& k);
+template &lt;class K&gt; const_iterator find(const K& k) const;</ins>
+size_type      count(const key_type& k) const;
+<ins>template &lt;class K&gt; size_type count(const K& k) const;</ins>
+pair<iterator, iterator>             equal_range(const key_type& k);
+pair<const_iterator, const_iterator> equal_range(const key_type& k) const;
+<ins>template &lt;class K&gt; pair&lt;iterator, iterator&gt; equal_range(const K& k);
+template &lt;class K&gt; pair&lt;const_iterator, const_iterator&gt; equal_range(const K& k) const;</ins>
+</pre>
+</blockquote>
+
+<h3>26.5.5.1 Class template unordered_­multimap overview [unord.multimap.overview]</h3>
+<blockquote>
+<pre>// map operations:
+iterator       find(const key_type& k);
+const_iterator find(const key_type& k) const;
+<ins>template &lt;class K&gt; iterator find(const K& k);
+template &lt;class K&gt; const_iterator find(const K& k) const;</ins>
+size_type      count(const key_type& k) const;
+<ins>template &lt;class K&gt; size_type count(const K& k) const;</ins>
+pair<iterator, iterator>             equal_range(const key_type& k);
+pair<const_iterator, const_iterator> equal_range(const key_type& k) const;
+<ins>template &lt;class K&gt; pair&lt;iterator, iterator&gt; equal_range(const K& k);
+template &lt;class K&gt; pair&lt;const_iterator, const_iterator&gt; equal_range(const K& k) const;</ins>
+</pre>
+</blockquote>
+
+<h3>26.5.6.1 Class template unordered_­set overview [unord.set.overview]</h3>
+<blockquote>
+<pre>// set operations:
+iterator       find(const key_type& k);
+const_iterator find(const key_type& k) const;
+<ins>template &lt;class K&gt; iterator find(const K& k);
+template &lt;class K&gt; const_iterator find(const K& k) const;</ins>
+size_type      count(const key_type& k) const;
+<ins>template &lt;class K&gt; size_type count(const K& k) const;</ins>
+pair<iterator, iterator>             equal_range(const key_type& k);
+pair<const_iterator, const_iterator> equal_range(const key_type& k) const;
+<ins>template &lt;class K&gt; pair&lt;iterator, iterator&gt; equal_range(const K& k);
+template &lt;class K&gt; pair&lt;const_iterator, const_iterator&gt; equal_range(const K& k) const;</ins>
+</pre>
+</blockquote>
+
+<h3>26.5.7.1 Class template unordered_­multiset overview [unord.multiset.overview]</h3>
+<blockquote>
+<pre>// set operations:
+iterator       find(const key_type& k);
+const_iterator find(const key_type& k) const;
+<ins>template &lt;class K&gt; iterator find(const K& k);
+template &lt;class K&gt; const_iterator find(const K& k) const;</ins>
+size_type      count(const key_type& k) const;
+<ins>template &lt;class K&gt; size_type count(const K& k) const;</ins>
+pair<iterator, iterator>             equal_range(const key_type& k);
+pair<const_iterator, const_iterator> equal_range(const key_type& k) const;
+<ins>template &lt;class K&gt; pair&lt;iterator, iterator&gt; equal_range(const K& k);
+template &lt;class K&gt; pair&lt;const_iterator, const_iterator&gt; equal_range(const K& k) const;</ins>
+</pre>
+</blockquote>
+</blockquote>
+
+<h2><a name="implementability">Implementability</a></h2>
+<p>Heterogeneous lookup functions may be enabled via SFINAE. It requires <code>Hash</code> and <code>Pred</code>
+function objects to be both transparent. Since C++14 Standard Library implementations already have facilities
+to test transparency of a single function object. Combine them by logical AND to build a complex metafunction
+<code>enable_if_transparent</code>.</p>
+<blockquote>
+<pre>
+template &lt;class Key, class Hash = hash&lt;Key&gt;, class Pred = equal_to&lt;Key&gt;,
+          class Allocator = allocator&lt;Key&gt;&gt;
+class unordered_set {
+  ...
+  template &lt;class K, class T&gt;
+  using enable_if_transparent = typename enable_if&lt;
+    is_transparent&lt;Hash, K&gt;::value &&
+    is_transparent&lt;Pred, K&gt;::value, T&gt;::type;
+  ...
+  template &lt;class K&gt;
+  enable_if_transparent&lt;K, iterator&gt; find(const K& k) { ... }
+  template &lt;class K>
+  enable_if_transparent&lt;K, const_iterator&gt; find(const K& k) const { ... }
+  ...
+};
+</pre>
+</blockquote>
+<p>Possible implementation of heterogeneous lookup for <code>std::unordered_set</code> in libc++ may be found at <a
+href="https://github.com/compmaniak/libcxx/pull/1/files">https://github.com/compmaniak/libcxx/pull/1/files</a>.</p>
+
+<h2><a name="acknowledgements">Acknowledgements</a></h2>
+<p>Antony Polukhin discussed and made corrections to the proposal.</p>
+
+<h2><a name="references">References</a></h2>
+<ol>
+    <li>Mark Boyall, "Heterogenous extensions to unordered containers" (N3573, <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2013/n3573.html">http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2013/n3573.html</a>)</li>
+</ol>
+
+</body></html>
